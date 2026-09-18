@@ -1,0 +1,39 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - ca-certificates
+  - openssl
+  - socat
+  - unzip
+
+write_files:
+  - path: /root/install-xui.sh
+    permissions: "0700"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      export XUI_NONINTERACTIVE=1
+      export XUI_SSL_MODE=none
+      export XUI_PANEL_PORT=2053
+
+      curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/main/install.sh | bash
+
+      systemctl enable x-ui
+      systemctl restart x-ui
+
+      cat >/etc/motd.d/90-xui-info <<'EOF'
+      Xray/3x-ui installation completed.
+      Credentials are stored in /etc/x-ui/install-result.env (root-only).
+      EOF
+
+runcmd:
+  - [ bash, /root/install-xui.sh ]
+  - [ bash, -c, "echo '3x-ui installation finished' > /var/log/xray-deploy-complete" ]
+  - [ bash, -c, "chmod 600 /var/log/xray-deploy-complete" ]
+
+final_message: "Oracle Xray VM provisioning finished. 3x-ui installation was started automatically."

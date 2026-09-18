@@ -1,0 +1,17 @@
+compartment_id      = "ocid1.compartment.oc1..REPLACE_ME"
+region              = "eu-frankfurt-1"
+availability_domain = ""
+
+ssh_public_key = "ssh-ed25519 AAAA...REPLACE_ME"
+
+instance_name = "xray-fixed-ip"
+ocpus         = 2
+memory_in_gbs = 12
+
+# Strongly recommended: replace with YOUR_PUBLIC_IP/32.
+ssh_source_cidr = "0.0.0.0/0"
+
+xray_port   = 443
+enable_http = false
+
+ubuntu_version = "24.04"

@@ -8,6 +8,7 @@ packages:
   - openssl
   - socat
   - unzip
+  - jq
 
 write_files:
   - path: /root/install-xui.sh
@@ -26,14 +27,122 @@ write_files:
       systemctl enable x-ui
       systemctl restart x-ui
 
+      for i in $(seq 1 60); do
+        if [ -s /etc/x-ui/install-result.env ]; then break; fi
+        sleep 2
+      done
+
+      . /etc/x-ui/install-result.env
+
+      XUI_BASE="http://127.0.0.1:${XUI_PANEL_PORT}"
+      XUI_PATH="/${XUI_WEB_BASE_PATH}"
+      XUI_PATH="${XUI_PATH%/}"
+
+      curl -fsS -c /root/xui-cookie.txt \
+        -H 'Content-Type: application/json' \
+        -d "$(jq -n --arg u "$XUI_USERNAME" --arg p "$XUI_PASSWORD" '{username:$u,password:$p}')" \
+        "$XUI_BASE$XUI_PATH/login" >/root/xui-login.json
+
+      XRAY_BIN="$(command -v xray || true)"
+      if [ -z "$XRAY_BIN" ]; then
+        XRAY_BIN="$(find /usr/local /opt /root -type f -name xray -perm -111 2>/dev/null | head -n1 || true)"
+      fi
+      if [ -z "$XRAY_BIN" ]; then
+        echo "xray binary not found after 3x-ui installation" >&2
+        exit 1
+      fi
+
+      X25519_OUT="$($XRAY_BIN x25519)"
+      PRIVATE_KEY="$(printf '%s\n' "$X25519_OUT" | awk -F': ' '/Private key:/ {print $2; exit}')"
+      PUBLIC_KEY="$(printf '%s\n' "$X25519_OUT" | awk -F': ' '/Public key:/ {print $2; exit}')"
+      UUID="$(cat /proc/sys/kernel/random/uuid)"
+      SHORT_ID="$(openssl rand -hex 8)"
+
+      if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
+        echo "Failed to generate X25519 keypair" >&2
+        exit 1
+      fi
+
+      PAYLOAD="$(jq -n \
+        --arg uuid "$UUID" \
+        --arg privateKey "$PRIVATE_KEY" \
+        --arg shortId "$SHORT_ID" \
+        --argjson port ${xray_port} \
+        '{
+          enable:true,
+          remark:"VLESS-REALITY-443",
+          listen:"",
+          port:$port,
+          protocol:"vless",
+          expiryTime:0,
+          total:0,
+          settings:{
+            clients:[{id:$uuid,email:"default",flow:"xtls-rprx-vision"}],
+            decryption:"none",
+            fallbacks:[]
+          },
+          streamSettings:{
+            network:"tcp",
+            security:"reality",
+            realitySettings:{
+              show:false,
+              xver:0,
+              dest:"www.microsoft.com:443",
+              serverNames:["www.microsoft.com"],
+              privateKey:$privateKey,
+              shortIds:[$shortId],
+              fingerprint:"chrome"
+            }
+          },
+          sniffing:{
+            enabled:true,
+            destOverride:["http","tls"]
+          }
+        }')"
+
+      curl -fsS -b /root/xui-cookie.txt \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD" \
+        "$XUI_BASE$XUI_PATH/panel/api/inbounds/add" >/root/xui-inbound.json
+
+      if ! jq -e '.success == true' /root/xui-inbound.json >/dev/null 2>&1; then
+        cat /root/xui-inbound.json >&2
+        exit 1
+      fi
+
+      SERVER_IP=""
+      for i in $(seq 1 90); do
+        SERVER_IP="$(curl -fsS --max-time 3 -H 'Authorization: Bearer Oracle' \
+          http://169.254.169.254/opc/v2/vnics/ 2>/dev/null \
+          | jq -r '.[0].publicIp // empty' || true)"
+        if [ -n "$SERVER_IP" ]; then break; fi
+        sleep 2
+      done
+
+      if [ -z "$SERVER_IP" ]; then
+        echo "Reserved public IP is not visible through metadata yet." > /root/xray-vless.txt
+        echo "UUID=$UUID" >> /root/xray-vless.txt
+        echo "PUBLIC_KEY=$PUBLIC_KEY" >> /root/xray-vless.txt
+        echo "SHORT_ID=$SHORT_ID" >> /root/xray-vless.txt
+        chmod 600 /root/xray-vless.txt
+      else
+        VLESS_URI="vless://${UUID}@${SERVER_IP}:${xray_port}?security=reality&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&sni=www.microsoft.com&fp=chrome&spx=%2F&flow=xtls-rprx-vision#Oracle-Xray"
+        umask 077
+        printf '%s\n' "$VLESS_URI" > /root/xray-vless.txt
+        printf 'SERVER_IP=%s\nUUID=%s\nPUBLIC_KEY=%s\nSHORT_ID=%s\n' "$SERVER_IP" "$UUID" "$PUBLIC_KEY" "$SHORT_ID" >> /root/xray-vless.txt
+        chmod 600 /root/xray-vless.txt
+      fi
+
+      rm -f /root/xui-cookie.txt /root/xui-login.json /root/xui-inbound.json
       cat >/etc/motd.d/90-xui-info <<'EOF'
-      Xray/3x-ui installation completed.
-      Credentials are stored in /etc/x-ui/install-result.env (root-only).
+      Xray/3x-ui installation and VLESS+REALITY provisioning completed.
+      Credentials: /etc/x-ui/install-result.env
+      Client config: /root/xray-vless.txt
       EOF
 
 runcmd:
   - [ bash, /root/install-xui.sh ]
-  - [ bash, -c, "echo '3x-ui installation finished' > /var/log/xray-deploy-complete" ]
+  - [ bash, -c, "echo '3x-ui + VLESS REALITY provisioning finished' > /var/log/xray-deploy-complete" ]
   - [ bash, -c, "chmod 600 /var/log/xray-deploy-complete" ]
 
-final_message: "Oracle Xray VM provisioning finished. 3x-ui installation was started automatically."
+final_message: "Oracle Xray VM provisioning finished. 3x-ui and VLESS+REALITY were provisioned automatically."

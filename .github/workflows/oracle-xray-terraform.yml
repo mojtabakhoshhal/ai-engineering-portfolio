@@ -1,0 +1,80 @@
+name: Oracle Xray Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: oracle-xray
+    defaults:
+      run:
+        working-directory: infra/oracle-xray-fixed-ip
+
+    env:
+      TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_OCID }}
+      TF_VAR_region: ${{ secrets.OCI_REGION }}
+      TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Write OCI key
+        shell: bash
+        run: |
+          printf '%s\n' "$OCI_PRIVATE_KEY" > "$RUNNER_TEMP/oci_api_key.pem"
+          chmod 600 "$RUNNER_TEMP/oci_api_key.pem"
+          echo "OCI_PRIVATE_KEY_PATH=$RUNNER_TEMP/oci_api_key.pem" >> "$GITHUB_ENV"
+
+      - name: Configure OCI authentication
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.oci"
+          cat > "$HOME/.oci/config" <<EOF
+          [DEFAULT]
+          tenancy=$OCI_TENANCY_OCID
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          key_file=$OCI_PRIVATE_KEY_PATH
+          region=$TF_VAR_region
+          EOF
+          chmod 600 "$HOME/.oci/config"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: inputs.action == 'plan'
+        run: terraform plan -input=false
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply'
+        run: terraform apply -auto-approve -input=false
+
+      - name: Terraform Destroy
+        if: inputs.action == 'destroy'
+        run: terraform destroy -auto-approve -input=false
